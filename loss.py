@@ -28,6 +28,9 @@ def loss(logits, labels, num_classes, head=None):
       loss: Loss tensor of type float.
     """
     with tf.name_scope('loss'):
+
+        # loss = tf.reduce_mean((tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(labels, squeeze_dims=[3]), name="entropy")))
+
         logits = tf.reshape(logits, (-1, num_classes))
         epsilon = tf.constant(value=1e-4)
         logits = logits
@@ -37,14 +40,18 @@ def loss(logits, labels, num_classes, head=None):
 
         if head is not None:
             cross_entropy = -tf.reduce_sum(tf.mul(labels * tf.log(softmax),
-                                           head), reduction_indices=[1])
+                                           head), axis=1)
         else:
             cross_entropy = -tf.reduce_sum(
-                labels * tf.log(softmax), reduction_indices=[1])
+                labels * tf.log(softmax), axis=1)
 
         cross_entropy_mean = tf.reduce_mean(cross_entropy,
                                             name='xentropy_mean')
         tf.add_to_collection('losses', cross_entropy_mean)
+
+        for var in tf.get_collection('losses'):
+            if var is not None:
+                tf.summary.scalar(var.op.name + "/losses", var)
 
         loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
     return loss

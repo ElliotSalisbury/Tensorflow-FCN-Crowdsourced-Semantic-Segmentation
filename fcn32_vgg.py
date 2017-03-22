@@ -34,8 +34,7 @@ class FCN32VGG:
         self.wd = 5e-4
         print("npy file loaded")
 
-    def build(self, bgr, train=False, num_classes=20, random_init_fc8=False,
-              debug=False):
+    def build(self, bgr, train=False, num_classes=20, debug=False, keep_prob=None):
         """
         Build the VGG model using loaded weights
         Parameters
@@ -98,19 +97,16 @@ class FCN32VGG:
         self.fc6 = self._fc_layer(self.pool5, "fc6")
 
         if train:
-            self.fc6 = tf.nn.dropout(self.fc6, 0.5)
+            self.fc6 = tf.nn.dropout(self.fc6, keep_prob=keep_prob)
 
         self.fc7 = self._fc_layer(self.fc6, "fc7")
         if train:
-            self.fc7 = tf.nn.dropout(self.fc7, 0.5)
+            self.fc7 = tf.nn.dropout(self.fc7, keep_prob=keep_prob)
 
-        if random_init_fc8:
-            self.score_fr = self._score_layer(self.fc7, "score_fr",
-                                              num_classes)
-        else:
-            self.score_fr = self._fc_layer(self.fc7, "score_fr",
-                                           num_classes=num_classes,
-                                           relu=False)
+
+        self.score_fr = self._fc_layer(self.fc7, "score_fr",
+                                       num_classes=num_classes,
+                                       relu=False)
 
         self.pred = tf.argmax(self.score_fr, dimension=3)
 
@@ -119,6 +115,7 @@ class FCN32VGG:
                                            debug=debug,
                                            name='up', ksize=64, stride=32)
 
+        self.prob_up = tf.nn.softmax(self.upscore)
         self.pred_up = tf.argmax(self.upscore, dimension=3)
 
     def _max_pool(self, bottom, name, debug):
@@ -150,15 +147,15 @@ class FCN32VGG:
             shape = bottom.get_shape().as_list()
 
             if name == 'fc6':
-                filt = self.get_fc_weight_reshape(name, [7, 7, 512, 4096])
+                filt = self.get_fc_weight_reshape(name, [7, 7, 512, 4096], trainable=True)
             elif name == 'score_fr':
                 name = 'fc8'  # Name of score_fr layer in VGG Model
                 filt = self.get_fc_weight_reshape(name, [1, 1, 4096, 1000],
-                                                  num_classes=num_classes)
+                                                  num_classes=num_classes, trainable=True)
             else:
-                filt = self.get_fc_weight_reshape(name, [1, 1, 4096, 4096])
+                filt = self.get_fc_weight_reshape(name, [1, 1, 4096, 4096], trainable=True)
             conv = tf.nn.conv2d(bottom, filt, [1, 1, 1, 1], padding='SAME')
-            conv_biases = self.get_bias(name, num_classes=num_classes)
+            conv_biases = self.get_bias(name, num_classes=num_classes, trainable=True)
             bias = tf.nn.bias_add(conv, conv_biases)
 
             if relu:
@@ -169,26 +166,6 @@ class FCN32VGG:
                 bias = tf.Print(bias, [tf.shape(bias)],
                                 message='Shape of %s' % name,
                                 summarize=4, first_n=1)
-            return bias
-
-    def _score_layer(self, bottom, name, num_classes):
-        with tf.variable_scope(name) as scope:
-            # get number of input channels
-            in_features = bottom.get_shape()[3].value
-            shape = [1, 1, in_features, num_classes]
-            # He initialization Sheme
-            num_input = in_features
-            stddev = (2 / num_input)**0.5
-            # Apply convolution
-            w_decay = self.wd
-            weights = self._variable_with_weight_decay(shape, stddev, w_decay)
-            conv = tf.nn.conv2d(bottom, weights, [1, 1, 1, 1], padding='SAME')
-            # Apply bias
-            conv_biases = self._bias_variable([num_classes], constant=0.0)
-            bias = tf.nn.bias_add(conv, conv_biases)
-
-            _activation_summary(bias)
-
             return bias
 
     def _upscore_layer(self, bottom, shape,
@@ -219,13 +196,13 @@ class FCN32VGG:
             weights = self.get_deconv_filter(f_shape)
             deconv = tf.nn.conv2d_transpose(bottom, weights, output_shape,
                                             strides=strides, padding='SAME')
+            _activation_summary(deconv)
 
             if debug:
                 deconv = tf.Print(deconv, [tf.shape(deconv)],
                                   message='Shape of %s' % name,
                                   summarize=4, first_n=1)
 
-        _activation_summary(deconv)
         return deconv
 
     def get_deconv_filter(self, f_shape):
@@ -253,14 +230,10 @@ class FCN32VGG:
         shape = self.data_dict[name][0].shape
         print('Layer name: %s' % name)
         print('Layer shape: %s' % str(shape))
-        var = tf.get_variable(name="filter", initializer=init, shape=shape)
-        if not tf.get_variable_scope().reuse:
-            weight_decay = tf.multiply(tf.nn.l2_loss(var), self.wd,
-                                       name='weight_loss')
-            tf.add_to_collection('losses', weight_decay)
+        var = tf.get_variable(name="filter", initializer=init, shape=shape, trainable=False)
         return var
 
-    def get_bias(self, name, num_classes=None):
+    def get_bias(self, name, num_classes=None, trainable=False):
         bias_wights = self.data_dict[name][1]
         shape = self.data_dict[name][1].shape
         if name == 'fc8':
@@ -269,18 +242,7 @@ class FCN32VGG:
             shape = [num_classes]
         init = tf.constant_initializer(value=bias_wights,
                                        dtype=tf.float32)
-        return tf.get_variable(name="biases", initializer=init, shape=shape)
-
-    def get_fc_weight(self, name):
-        init = tf.constant_initializer(value=self.data_dict[name][0],
-                                       dtype=tf.float32)
-        shape = self.data_dict[name][0].shape
-        var = tf.get_variable(name="weights", initializer=init, shape=shape)
-        if not tf.get_variable_scope().reuse:
-            weight_decay = tf.multiply(tf.nn.l2_loss(var), self.wd,
-                                       name='weight_loss')
-            tf.add_to_collection('losses', weight_decay)
-        return var
+        return tf.get_variable(name="biases", initializer=init, shape=shape, trainable=trainable)
 
     def _bias_reshape(self, bweight, num_orig, num_new):
         """ Build bias weights for filter produces with `_summary_reshape`
@@ -333,40 +295,12 @@ class FCN32VGG:
                 fweight[:, :, :, start_idx:end_idx], axis=3)
         return avg_fweight
 
-    def _variable_with_weight_decay(self, shape, stddev, wd):
-        """Helper to create an initialized Variable with weight decay.
-
-        Note that the Variable is initialized with a truncated normal
-        distribution.
-        A weight decay is added only if one is specified.
-
-        Args:
-          name: name of the variable
-          shape: list of ints
-          stddev: standard deviation of a truncated Gaussian
-          wd: add L2Loss weight decay multiplied by this float. If None, weight
-              decay is not added for this Variable.
-
-        Returns:
-          Variable Tensor
-        """
-
-        initializer = tf.truncated_normal_initializer(stddev=stddev)
-        var = tf.get_variable('weights', shape=shape,
-                              initializer=initializer)
-
-        if wd and (not tf.get_variable_scope().reuse):
-            weight_decay = tf.multiply(
-                tf.nn.l2_loss(var), wd, name='weight_loss')
-            tf.add_to_collection('losses', weight_decay)
-        return var
-
     def _bias_variable(self, shape, constant=0.0):
         initializer = tf.constant_initializer(constant)
         return tf.get_variable(name='biases', shape=shape,
                                initializer=initializer)
 
-    def get_fc_weight_reshape(self, name, shape, num_classes=None):
+    def get_fc_weight_reshape(self, name, shape, num_classes=None, trainable=False):
         print('Layer name: %s' % name)
         print('Layer shape: %s' % shape)
         weights = self.data_dict[name][0]
@@ -376,7 +310,13 @@ class FCN32VGG:
                                             num_new=num_classes)
         init = tf.constant_initializer(value=weights,
                                        dtype=tf.float32)
-        return tf.get_variable(name="weights", initializer=init, shape=shape)
+        var = tf.get_variable(name="weights", initializer=init, shape=shape, trainable=trainable)
+        if not tf.get_variable_scope().reuse:
+            weight_decay = tf.multiply(tf.nn.l2_loss(var), self.wd,
+                                       name='weight_loss')
+            tf.add_to_collection('losses', weight_decay)
+
+        return var
 
 
 def _activation_summary(x):
