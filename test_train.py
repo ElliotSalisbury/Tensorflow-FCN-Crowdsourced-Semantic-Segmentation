@@ -124,15 +124,17 @@ def run_network():
         training_records, validation_records = load_data("E:/videoseg/VanuatuGT")
 
         image_options = {'resize': True, 'resize_size': 244}
-        train_dataset_reader = BatchDataset2(training_records, NUM_CLASSES, image_options, uptoFrameId=30*60*2)
+        DURATION = 30 * 60 * 2
+        train_dataset_reader = BatchDataset2(training_records, NUM_CLASSES, image_options, fromFrameId=0, uptoFrameId=DURATION)
         validation_dataset_reader = BatchDataset2(validation_records, NUM_CLASSES, image_options)
 
         print("Training the Network")
         saver = tf.train.Saver()
         # saver.restore(sess, "./chkpt/model32.ckpt")
-        MAX_ITERATION = int(1e5 + 1)
+        MAX_ITERATION = int(500)
+        VIDEO_STEPS = int(5)
         BATCH_SIZE = 1
-        for itr in range(0, MAX_ITERATION):
+        for itr in range(1, MAX_ITERATION*VIDEO_STEPS + 2):
             train_images, train_annotations = train_dataset_reader.next_batch(BATCH_SIZE)
             feed_dict = {images: train_images, annotations: train_annotations, keep_probability: 0.4}
 
@@ -152,50 +154,54 @@ def run_network():
                 save_path = saver.save(sess, "./chkpt/model32.ckpt")
                 print("Model saved in file: %s" % save_path)
 
-        print('Running the Network')
-        # feed_dict = {images: img1}
-        # tensors = [vgg_fcn.pred, vgg_fcn.pred_up]
-        # down, up = sess.run(tensors, feed_dict=feed_dict)
-        #
-        # down_color = utils.color_image(down[0])
-        # up_color = utils.color_image(up[0])
+            if itr % MAX_ITERATION == 0:
+                #we've finished training for this portion of the video, lets save out the video and start training on the next part of the video
+                videoItr = int(itr / MAX_ITERATION)
 
-        # down_color_up = cv2.resize(down_color[:, :, :3], (img1.shape[1], img1.shape[0]))
-        # cv2.imshow("up", ((img1 * 0.5) + (down_color_up * (255 * 0.5))).astype(np.uint8))
-        # cv2.waitKey(-1)
-        # scp.misc.imsave('fcn16_downsampled.png', down_color)
-        # scp.misc.imsave('fcn16_upsampled.png', up_color)
+                print("processing the entire video")
+                cap = cv2.VideoCapture("E:\\vanuatu\\vanuatu35\\640x360\\vanuatu35_%06d.jpg")
+                frameNum = 0
+                allFrames = None
+                while (True):
+                    # Capture frame-by-frame
+                    frames = []
+                    ret = False
+                    for i in range(20):
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        frameNum += 1
 
-        # Loading images
-        cap = cv2.VideoCapture("E:\\vanuatu\\vanuatu35\\640x360\\vanuatu35_%06d.jpg")
-        frameNum = -2
-        while (True):
-            # Capture frame-by-frame
-            frameNum += 1
-            for i in range(15):
-                ret, frame = cap.read()
-            if not ret:
-                break
+                        frame = cv2.resize(frame, (image_options['resize_size'], image_options['resize_size']))
 
-            #process frame
-            h,w,d = frame.shape
-            newsize = (int(w/1),int(h/1))
-            # frame = cv2.resize(frame,newsize)
+                        if frame is not None and frame.any():
+                            frames.append(frame)
 
-            feed_dict = {images: frame}
-            tensors = [vgg_fcn.pred, vgg_fcn.pred_up]
-            down,up = sess.run(tensors, feed_dict=feed_dict)
+                    if frames:
+                        feed_dict = {images: np.array(frames), keep_probability: 1.0}
+                        prob = sess.run([vgg_fcn.prob_up], feed_dict=feed_dict)
+                        prob = prob[0][:, :, :, 1, None]
 
-            down_color = utils.color_image(down[0], num_classes=NUM_CLASSES)
-            up_color = utils.color_image(up[0], num_classes=NUM_CLASSES)
+                        if allFrames is None:
+                            allFrames = prob
+                        else:
+                            allFrames = np.vstack((allFrames, prob))
 
-            down_color_up = cv2.resize(down_color.squeeze()[:,:,:3], newsize, interpolation=cv2.INTER_NEAREST)
+                    if allFrames.shape[0] > 1000 or not ret:
+                        print("saving frames {} - {}".format(frameNum-allFrames.shape[0], frameNum))
+                        p_path = os.path.join("E:/videoseg/VanuatuProb", "{:d}_{:05d}_P.npy".format(videoItr, frameNum))
+                        np.save(p_path, allFrames)
+                        allFrames = None
 
-            cv2.imshow("down", ((frame * 0.5) + (down_color_up * (255 * 0.5))).astype(np.uint8))
-            cv2.imshow("up", ((frame * 0.5) + (up_color[:,:,:3] * (255 * 0.5))).astype(np.uint8))
-            cv2.waitKey(1)
+                    if not ret:
+                        break
+                cap.release()
 
-        cap.release()
+                startFrameId = int(videoItr * 30 * 60)
+                print("loading the next section of the training data. {} - {}".format(startFrameId,
+                                                                                      startFrameId + DURATION))
+                train_dataset_reader.changeFrameIdRange(fromFrameId=startFrameId, uptoFrameId=startFrameId+DURATION)
+
 
 if __name__ == "__main__":
     run_network()

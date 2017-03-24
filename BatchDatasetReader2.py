@@ -13,7 +13,7 @@ class BatchDataset2:
     batch_offset = 0
     epochs_completed = 0
 
-    def __init__(self, records_list, numAnnotationClasses, image_options={}, uptoFrameId = None):
+    def __init__(self, records_list, numAnnotationClasses, image_options={}, fromFrameId = 0, uptoFrameId = None):
         """
         Intialize a generic file reader with batching for list of files
         :param records_list: list of file records to read -
@@ -28,14 +28,17 @@ class BatchDataset2:
         print(image_options)
         self.files = records_list
         self.image_options = image_options
+
+        self.fromFrameId = 0
         self.uptoFrameId = uptoFrameId
+
         self.numAnnotationClasses = numAnnotationClasses
         self._read_images()
 
     def _read_images(self):
-        self.images = np.array([self._transform(filename['image']) for filename in self.files if self.uptoFrameId is None or filename['frameId'] <= self.uptoFrameId])
+        self.images = np.array([self._transform(filename['image']) for filename in self.files if self.uptoFrameId is None or self.fromFrameId <= filename['frameId'] < self.uptoFrameId])
         self.annotations = np.array(
-            [self._transform(filename['annotation'], annotations=True) for filename in self.files if self.uptoFrameId is None or filename['frameId'] <= self.uptoFrameId])
+            [self._transform(filename['annotation'], annotations=True) for filename in self.files if self.uptoFrameId is None or self.fromFrameId <= filename['frameId'] < self.uptoFrameId])
         print (self.images.shape)
         print (self.annotations.shape)
 
@@ -64,7 +67,8 @@ class BatchDataset2:
 
         return np.array(image)
 
-    def changeUptoFrameId(self, uptoFrameId):
+    def changeFrameIdRange(self, fromFrameId, uptoFrameId):
+        self.fromFrameId = fromFrameId
         self.uptoFrameId = uptoFrameId
         self._read_images()
 
